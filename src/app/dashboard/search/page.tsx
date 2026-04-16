@@ -180,7 +180,7 @@ export default function SearchPage() {
 
           {results.length === 0 && !loading && (
             <div className="text-center py-16 text-gray-400">
-              <Building2Size={40} className="mx-auto mb-3 opacity-30" />
+              <Building2Size size={40} className="mx-auto mb-3 opacity-30" />
               <p>No encontramos propiedades con esos filtros.</p>
               <p className="text-sm mt-1">Probá ampliando los criterios de búsqueda.</p>
             </div>
