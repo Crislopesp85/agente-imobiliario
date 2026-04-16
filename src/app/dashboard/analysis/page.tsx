@@ -28,7 +28,7 @@ function AnalysisContent() {
   async function loadProperties() {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
-    const { data } = await supabase.from('seller_properties').select('*').eq('seller_id', user.id).eq('status', 'active')
+    const { data } = await supabase.from('seller_properties').select('*').eq('seller_id', user.id).eq('status', 'active') as { data: SellerProperty[] | null }
     setProperties(data || [])
     if (propertyId && data) {
       const prop = data.find(p => p.id === propertyId)
@@ -58,14 +58,14 @@ function AnalysisContent() {
       query = query.gte('rooms', property.rooms - 1).lte('rooms', property.rooms + 1)
     }
 
-    const { data: comparables } = await query
+    const { data: comparables } = await query as { data: Listing[] | null }
 
     const result = analyzePrice(comparables || [], property.m2_total, property.urgency)
     setAnalysis(result)
 
     // Salvar análise no banco
     if (comparables && comparables.length > 0) {
-      await supabase.from('price_analyses').insert({
+      await (supabase.from('price_analyses') as any).insert({
         property_id: property.id,
         comparables: comparables.map(c => ({ id: c.id, price: c.price, m2_total: c.m2_total })),
         price_per_m2_avg: result.pricePerM2.avg,
@@ -182,7 +182,7 @@ function AnalysisContent() {
                 <BarChart data={chartData}>
                   <XAxis dataKey="name" tick={{ fontSize: 12 }} />
                   <YAxis tick={{ fontSize: 12 }} tickFormatter={v => `${v}`} />
-                  <Tooltip formatter={(v: number) => [`USD ${v.toLocaleString('es-AR')}/m²`, 'Precio/m²']} />
+                  <Tooltip formatter={(v) => [`USD ${Number(v).toLocaleString('es-AR')}/m²`, 'Precio/m²']} />
                   <ReferenceLine y={analysis.pricePerM2.median} stroke="#6366f1" strokeDasharray="4 2" label={{ value: 'Mediana', fill: '#6366f1', fontSize: 11 }} />
                   <Bar dataKey="precio" fill="#a5b4fc" radius={[4, 4, 0, 0]} />
                 </BarChart>
