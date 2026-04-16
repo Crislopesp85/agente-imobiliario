@@ -1,6 +1,9 @@
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
+import type { Database } from '@/lib/supabase/types'
+
+type Profile = Database['public']['Tables']['profiles']['Row']
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient()
@@ -8,11 +11,11 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   if (!user) redirect('/login')
 
-  const { data: profile } = await supabase
+  const { data: profile } = await (supabase as any)
     .from('profiles')
     .select('*')
     .eq('id', user.id)
-    .single()
+    .single() as { data: Profile | null }
 
   if (!profile?.name) redirect('/onboarding')
 
