@@ -1,5 +1,3 @@
 # Agente Imobiliário
 
-Sistema para o mercado imobiliário argentino.
-
-O projeto Next.js está em `/agente-imobiliario`.
+Sistema para o mercado imobiliário argentino. Build: 1776342922
