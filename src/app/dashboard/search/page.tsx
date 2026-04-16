@@ -37,7 +37,7 @@ export default function SearchPage() {
     setLoading(true)
     setSearched(true)
 
-    let query = supabase
+    let query: any = supabase
       .from('property_listings')
       .select('*')
       .eq('status', 'active')
@@ -46,7 +46,7 @@ export default function SearchPage() {
 
     if (city) query = query.ilike('city', `%${city}%`)
     if (neighborhood) query = query.ilike('neighborhood', `%${neighborhood}%`)
-    if (propertyType) query = query.eq('property_type' as any, propertyType)
+    if (propertyType) query = query.eq('property_type', propertyType)
     if (minM2) query = query.gte('m2_total', Number(minM2))
     if (maxM2) query = query.lte('m2_total', Number(maxM2))
     if (minRooms) query = query.gte('rooms', Number(minRooms))
