@@ -69,7 +69,7 @@ export default function MyPropertyPage() {
                   {p.status === 'active' ? 'Activa' : p.status === 'sold' ? 'Vendida' : 'Borrador'}
                 </span>
               </div>
-              <p className="text-sm text-gray-500 mb-3">{p.neighborhood}, {p.city}</p>
+              <p className="text-sm text-gray-500 mb-3">{p.neighborhood}</p>
               <div className="flex items-center gap-4 text-sm text-gray-600 mb-4">
                 <span>{p.m2_total} m²</span>
                 <span>{p.rooms} amb.</span>
