@@ -30,10 +30,10 @@ export default function AgentClientsPage() {
       .from('agent_clients')
       .select('client_id')
       .eq('agent_id', user.id)
-      .eq('status', 'active')
+      .eq('status', 'active') as { data: { client_id: string }[] | null }
 
     if (rels && rels.length > 0) {
-      const ids = rels.map(r => r.client_id)
+      const ids = rels.map((r: { client_id: string }) => r.client_id)
       const { data: profiles } = await supabase.from('profiles').select('*').in('id', ids)
       setClients(profiles || [])
     }
