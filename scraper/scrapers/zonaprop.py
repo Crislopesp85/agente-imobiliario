@@ -1,71 +1,49 @@
-"""Scraper para ZonaProps (zonap rop.com.ar)."""
+"""Scraper para ZonaProp (zonaprop.com.ar) — urllib + asyncio.to_thread."""
 
 import asyncio
 import re
 import json
-from playwright.async_api import async_playwright, Page
+import urllib.request
+import urllib.error
 from normalizer import normalize_listing
 
 PORTAL = "zonaprop"
 BASE_URL = "https://www.zonaprop.com.ar"
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+}
 
-async def scrape_search_page(page: Page, url: str) -> list[dict]:
-    listings = []
-    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(2000)
 
-    # ZonaProps injeta dados no __NEXT_DATA__ ou em postings JSON
-    content = await page.content()
+def fetch_url(url: str) -> str | None:
+    try:
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            raw = r.read()
+            try:
+                return raw.decode("utf-8")
+            except Exception:
+                return raw.decode("latin-1")
+    except urllib.error.HTTPError as e:
+        print(f"[zonaprop] HTTP {e.code}: {url}")
+        return None
+    except Exception as e:
+        print(f"[zonaprop] Erro: {e}")
+        return None
 
-    # Tenta extrair do script __NEXT_DATA__
-    match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', content, re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(1))
-            postings = (
-                data.get("props", {})
-                .get("pageProps", {})
-                .get("initialState", {})
-                .get("listPostings", {})
-                .get("postings", [])
-            )
-            for p in postings:
-                listing = extract_posting(p)
-                if listing:
-                    listings.append(listing)
-            return listings
-        except Exception:
-            pass
 
-    # Fallback: extrai cards do DOM
-    cards = await page.query_selector_all('[data-posting-id]')
-    for card in cards:
-        try:
-            ext_id = await card.get_attribute("data-posting-id")
-            title_el = await card.query_selector('[class*="title"]')
-            price_el = await card.query_selector('[class*="price"]')
-            addr_el = await card.query_selector('[class*="address"]')
-            link_el = await card.query_selector("a")
-
-            title = (await title_el.inner_text()).strip() if title_el else ""
-            price_raw = (await price_el.inner_text()).strip() if price_el else ""
-            address = (await addr_el.inner_text()).strip() if addr_el else ""
-            href = await link_el.get_attribute("href") if link_el else ""
-            url_full = f"{BASE_URL}{href}" if href and href.startswith("/") else href
-
-            raw = {
-                "title": title,
-                "price": price_raw,
-                "address": address,
-                "url": url_full,
-                "city": "Buenos Aires",
-            }
-            listings.append(normalize_listing(PORTAL, ext_id or title[:40], raw))
-        except Exception:
-            continue
-
-    return listings
+def extract_list_postings(content: str) -> list:
+    m = re.search(r'"listPostings"\s*:\s*(\[)', content)
+    if not m:
+        return []
+    try:
+        decoder = json.JSONDecoder()
+        result, _ = decoder.raw_decode(content, m.start(1))
+        return result if isinstance(result, list) else []
+    except Exception:
+        return []
 
 
 def extract_posting(p: dict) -> dict | None:
@@ -74,28 +52,40 @@ def extract_posting(p: dict) -> dict | None:
         if not ext_id:
             return None
 
-        # Preço
-        price_data = p.get("priceOperationTypes", [{}])[0] if p.get("priceOperationTypes") else {}
-        prices = price_data.get("prices", [{}])
-        price_info = prices[0] if prices else {}
+        price_ops = p.get("priceOperationTypes", [])
+        price_info = {}
+        if price_ops:
+            prices = price_ops[0].get("prices", [])
+            if prices:
+                price_info = prices[0]
         price_raw = price_info.get("amount")
         currency = "USD" if price_info.get("currency") in ("USD", "U$S") else "ARS"
 
-        # Localização
-        geo = p.get("postingAddress", {}).get("geoLocation", {})
-        loc = p.get("postingLocation", {})
+        loc = p.get("postingLocation", {}) or {}
         neighborhood = (
             loc.get("neighbourhood", {}).get("name") or
             loc.get("location", {}).get("name", "")
-        )
-        city = loc.get("city", {}).get("name", "Buenos Aires")
+        ) if isinstance(loc, dict) else ""
+        city = loc.get("city", {}).get("name", "Buenos Aires") if isinstance(loc, dict) else "Buenos Aires"
 
-        # Atributos
-        features = {f.get("label", ""): f.get("value") for f in p.get("mainFeatures", [])}
-        m2_total = features.get("Sup. total") or features.get("Superficie total")
-        m2_covered = features.get("Sup. cubierta") or features.get("Superficie cubierta")
+        features_dict = p.get("mainFeatures", {})
+        features = {}
+        if isinstance(features_dict, dict):
+            for v in features_dict.values():
+                if isinstance(v, dict):
+                    features[v.get("label", "")] = v.get("value")
+        elif isinstance(features_dict, list):
+            for f in features_dict:
+                if isinstance(f, dict):
+                    features[f.get("label", "")] = f.get("value")
+
+        m2_total = features.get("Sup. total") or features.get("Superficie total") or features.get("Sup. Tot.")
+        m2_covered = features.get("Sup. cubierta") or features.get("Superficie cubierta") or features.get("Sup. Cub.")
         rooms = features.get("Amb.") or features.get("Ambientes")
-        bathrooms = features.get("Baños")
+        bathrooms = features.get("Baños") or features.get("Banos")
+
+        addr_data = p.get("postingAddress", {}) or {}
+        geo = addr_data.get("geoLocation", {}) or {} if isinstance(addr_data, dict) else {}
 
         raw = {
             "title": p.get("title", ""),
@@ -106,12 +96,12 @@ def extract_posting(p: dict) -> dict | None:
             "m2_covered": m2_covered,
             "rooms": rooms,
             "bathrooms": bathrooms,
-            "address": p.get("postingAddress", {}).get("address", ""),
+            "address": addr_data.get("address", "") if isinstance(addr_data, dict) else "",
             "neighborhood": neighborhood,
             "city": city,
             "latitude": geo.get("lat"),
             "longitude": geo.get("lon"),
-            "images": [img.get("url", "") for img in p.get("photos", [])[:5]],
+            "images": [img.get("url", "") for img in p.get("photos", [])[:5] if isinstance(img, dict)],
             "url": f"{BASE_URL}{p.get('url', '')}",
             "amenities": {},
         }
@@ -120,35 +110,31 @@ def extract_posting(p: dict) -> dict | None:
         return None
 
 
-async def scrape(neighborhoods: list[str], operation: str = "venta", max_pages: int = 5) -> list[dict]:
-    """
-    neighborhoods: lista de bairros ex: ['palermo', 'belgrano']
-    operation: 'venta' ou 'alquiler'
-    """
+async def scrape(neighborhoods: list[str], operation: str = "venta", max_pages: int = 3) -> list[dict]:
     all_listings = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
-        page = await context.new_page()
+    for neighborhood in neighborhoods:
+        slug = neighborhood.lower().replace(" ", "-")
+        for pg in range(1, max_pages + 1):
+            if pg == 1:
+                url = f"{BASE_URL}/departamentos-en-{operation}-en-{slug}.htm"
+            else:
+                url = f"{BASE_URL}/departamentos-en-{operation}-en-{slug}-pagina-{pg}.htm"
+            print(f"[zonaprop] {neighborhood} página {pg}")
 
-        for neighborhood in neighborhoods:
-            slug = neighborhood.lower().replace(" ", "-")
-            for pg in range(1, max_pages + 1):
-                url = f"{BASE_URL}/departamentos-{operation}/{slug}-pagina-{pg}.htm"
-                print(f"[ZonaProp] Scraping: {url}")
-                try:
-                    results = await scrape_search_page(page, url)
-                    if not results:
-                        break
-                    all_listings.extend(results)
-                    await asyncio.sleep(2)
-                except Exception as e:
-                    print(f"[ZonaProp] Erro na página {pg}: {e}")
-                    break
+            content = await asyncio.to_thread(fetch_url, url)
+            if not content:
+                break
 
-        await browser.close()
+            postings_raw = extract_list_postings(content)
+            if not postings_raw:
+                print(f"[zonaprop] nenhum posting em: {url}")
+                break
 
+            listings = [extract_posting(p) for p in postings_raw]
+            listings = [l for l in listings if l]
+            all_listings.extend(listings)
+            await asyncio.sleep(1)
+
+    print(f"[zonaprop] {len(all_listings)} imóveis encontrados")
     return all_listings
