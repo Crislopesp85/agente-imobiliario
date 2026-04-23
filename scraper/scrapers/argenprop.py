@@ -1,92 +1,125 @@
-"""Scraper para Argenprop (argenprop.com)."""
+"""Scraper para Argenprop (argenprop.com) — parse HTML direto."""
 
 import asyncio
 import re
 import json
-from playwright.async_api import async_playwright, Page
+import httpx
 from normalizer import normalize_listing
 
 PORTAL = "argenprop"
 BASE_URL = "https://www.argenprop.com"
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+}
 
-async def scrape_search_page(page: Page, url: str) -> list[dict]:
+
+def parse_listings_html(content: str, neighborhood: str) -> list[dict]:
+    """Parse listings from Argenprop HTML page."""
     listings = []
-    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(2000)
 
-    # Argenprop injeta dados como JSON em window.__INITIAL_STATE__ ou similar
-    content = await page.content()
+    # Try to find embedded JSON first (window.__INITIAL_STATE__ or similar)
+    for pattern in [
+        r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});\s*(?:</script>|window\.)',
+        r'window\.__STATE__\s*=\s*(\{.*?\});\s*(?:</script>|window\.)',
+    ]:
+        m = re.search(pattern, content, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                raw_listings = (
+                    data.get("listings", {}).get("data", {}).get("listings") or
+                    data.get("listingData", {}).get("listings") or
+                    []
+                )
+                if raw_listings:
+                    for p in raw_listings:
+                        listing = extract_listing_json(p)
+                        if listing:
+                            listings.append(listing)
+                    return listings
+            except Exception:
+                pass
 
-    # Tenta extrair JSON de script
-    match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', content, re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(1))
-            props = (
-                data.get("listings", {}).get("data", {}).get("listings", [])
-            )
-            for p in props:
-                listing = extract_listing(p)
-                if listing:
-                    listings.append(listing)
-            return listings
-        except Exception:
-            pass
+    # Fallback: parse HTML cards
+    # Each listing card has class "listing-card" or similar
+    # Extract hrefs + price + details
+    card_pattern = re.compile(
+        r'<(?:article|div)[^>]*class="[^"]*listing[^"]*"[^>]*>(.*?)</(?:article|div)>',
+        re.DOTALL | re.IGNORECASE
+    )
 
-    # Fallback DOM
-    cards = await page.query_selector_all(".listing__item, [class*='listing-card']")
-    for card in cards:
-        try:
-            link_el = await card.query_selector("a")
-            href = await link_el.get_attribute("href") if link_el else ""
-            ext_id = re.search(r"-(\d+)$", href or "")
-            ext_id = ext_id.group(1) if ext_id else href
+    # Simpler: find all property links and associated prices
+    # Pattern: <a href="/propiedad/...">
+    prop_blocks = re.findall(
+        r'<a[^>]+href="(/[^"]*(?:departamento|ph|casa)[^"]*)"[^>]*>(.*?)</a>',
+        content,
+        re.DOTALL | re.IGNORECASE
+    )
 
-            title_el = await card.query_selector("h2, .listing__title")
-            price_el = await card.query_selector(".listing__price, [class*='price']")
-            location_el = await card.query_selector(".listing__location, [class*='location']")
-
-            raw = {
-                "title": (await title_el.inner_text()).strip() if title_el else "",
-                "price": (await price_el.inner_text()).strip() if price_el else "",
-                "address": (await location_el.inner_text()).strip() if location_el else "",
-                "url": f"{BASE_URL}{href}" if href and href.startswith("/") else href or "",
-                "city": "Buenos Aires",
-            }
-            listings.append(normalize_listing(PORTAL, ext_id or href, raw))
-        except Exception:
+    seen = set()
+    for href, inner in prop_blocks:
+        if href in seen or len(href) < 10:
             continue
+        seen.add(href)
+
+        # Extract ID from URL (last number in path)
+        id_match = re.search(r'(\d{5,})', href)
+        ext_id = id_match.group(1) if id_match else href[-20:]
+
+        # Try to find price near this block
+        title = re.sub(r'<[^>]+>', '', inner).strip()[:200]
+
+        raw = {
+            "title": title,
+            "price": None,
+            "currency": "USD",
+            "neighborhood": neighborhood,
+            "city": "Buenos Aires",
+            "url": f"{BASE_URL}{href}",
+            "amenities": {},
+        }
+        listings.append(normalize_listing(PORTAL, ext_id, raw))
 
     return listings
 
 
-def extract_listing(p: dict) -> dict | None:
+def extract_listing_json(p: dict) -> dict | None:
     try:
         ext_id = str(p.get("id") or p.get("postingId", ""))
         if not ext_id:
             return None
 
         price_info = p.get("price", {})
-        price_raw = price_info.get("amount") or price_info.get("value")
-        currency = "USD" if str(price_info.get("currency", "")).upper() in ("USD", "U$S") else "ARS"
+        if isinstance(price_info, (int, float)):
+            price_raw, currency = price_info, "USD"
+        elif isinstance(price_info, dict):
+            price_raw = price_info.get("amount") or price_info.get("value")
+            currency = "USD" if str(price_info.get("currency", "")).upper() in ("USD", "U$S") else "ARS"
+        else:
+            price_raw, currency = None, "USD"
 
-        loc = p.get("location", {})
+        loc = p.get("location", {}) or {}
         neighborhood = loc.get("neighborhood") or loc.get("barrio", "")
         city = loc.get("city") or loc.get("ciudad", "Buenos Aires")
 
-        attrs = {a.get("id", ""): a.get("value") for a in p.get("attributes", [])}
+        attrs = {}
+        for a in p.get("attributes", []):
+            if isinstance(a, dict):
+                attrs[a.get("id", "")] = a.get("value")
 
         raw = {
             "title": p.get("title") or p.get("description", "")[:200],
             "description": p.get("description", ""),
             "price": price_raw,
             "currency": currency,
-            "m2_total": attrs.get("surfaceTotal") or attrs.get("superficie_total"),
-            "m2_covered": attrs.get("surfaceCovered") or attrs.get("superficie_cubierta"),
-            "rooms": attrs.get("rooms") or attrs.get("ambientes"),
-            "bathrooms": attrs.get("bathrooms") or attrs.get("banos"),
-            "parking": attrs.get("garages") or attrs.get("cocheras"),
+            "m2_total": attrs.get("surfaceTotal"),
+            "m2_covered": attrs.get("surfaceCovered"),
+            "rooms": attrs.get("rooms"),
+            "bathrooms": attrs.get("bathrooms"),
+            "parking": attrs.get("garages"),
             "address": p.get("address") or loc.get("address", ""),
             "neighborhood": neighborhood,
             "city": city,
@@ -101,31 +134,33 @@ def extract_listing(p: dict) -> dict | None:
         return None
 
 
-async def scrape(neighborhoods: list[str], operation: str = "venta", max_pages: int = 5) -> list[dict]:
+async def scrape_url(client: httpx.AsyncClient, url: str, neighborhood: str) -> list[dict]:
+    try:
+        resp = await client.get(url, headers=HEADERS, follow_redirects=True, timeout=30)
+        if resp.status_code != 200:
+            print(f"[argenprop] HTTP {resp.status_code}: {url}")
+            return []
+        return parse_listings_html(resp.text, neighborhood)
+    except Exception as e:
+        print(f"[argenprop] Erro: {e}")
+        return []
+
+
+async def scrape(neighborhoods: list[str], operation: str = "venta", max_pages: int = 3) -> list[dict]:
     all_listings = []
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        )
-        page = await context.new_page()
-
+    async with httpx.AsyncClient() as client:
         for neighborhood in neighborhoods:
             slug = neighborhood.lower().replace(" ", "-")
             for pg in range(1, max_pages + 1):
-                url = f"{BASE_URL}/departamentos-{operation}/{slug}--pagina-{pg}"
-                print(f"[Argenprop] Scraping: {url}")
-                try:
-                    results = await scrape_search_page(page, url)
-                    if not results:
-                        break
-                    all_listings.extend(results)
-                    await asyncio.sleep(2)
-                except Exception as e:
-                    print(f"[Argenprop] Erro: {e}")
+                base = f"{BASE_URL}/departamentos/venta/{slug}"
+                url = base if pg == 1 else f"{base}?pagina={pg}"
+                print(f"[argenprop] {neighborhood} página {pg}")
+                results = await scrape_url(client, url, neighborhood)
+                if not results:
                     break
+                all_listings.extend(results)
+                await asyncio.sleep(2)
 
-        await browser.close()
-
+    print(f"[argenprop] {len(all_listings)} imóveis encontrados")
     return all_listings
