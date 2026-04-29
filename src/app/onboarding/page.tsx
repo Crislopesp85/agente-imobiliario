@@ -38,6 +38,7 @@ export default function OnboardingPage() {
   const [phone, setPhone] = useState('')
   const [role, setRole] = useState<UserRole | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
   const [step, setStep] = useState(1)
   const router = useRouter()
   const supabase = createClient()
@@ -45,11 +46,20 @@ export default function OnboardingPage() {
   async function handleSubmit() {
     if (!role || !name) return
     setLoading(true)
+    setError('')
 
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
+    if (!user) { setError('Sesión expirada. Volvé a iniciar sesión.'); setLoading(false); return }
 
-    await supabase.from('profiles').update({ name, phone, role }).eq('id', user.id)
+    const { error: updateError } = await supabase
+      .from('profiles')
+      .upsert({ id: user.id, name, phone, role }, { onConflict: 'id' })
+
+    if (updateError) {
+      setError('Error al guardar: ' + updateError.message)
+      setLoading(false)
+      return
+    }
 
     router.push('/dashboard')
     router.refresh()
@@ -129,6 +139,7 @@ export default function OnboardingPage() {
               ))}
             </div>
 
+            {error && <p className="text-red-600 text-sm mb-2">{error}</p>}
             <div className="flex gap-3">
               <button
                 onClick={() => setStep(1)}
