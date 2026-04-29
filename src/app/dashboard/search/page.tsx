@@ -44,9 +44,16 @@ export default function SearchPage() {
       .order('price', { ascending: true })
       .limit(50)
 
-    if (city) query = query.ilike('city', `%${city}%`)
+    // Buenos Aires also stored as "Capital Federal" in many portals
+    if (city && !neighborhood) {
+      if (city === 'Buenos Aires') {
+        query = query.or('city.ilike.%Buenos Aires%,city.ilike.%Capital Federal%')
+      } else {
+        query = query.ilike('city', `%${city}%`)
+      }
+    }
     if (neighborhood) query = query.ilike('neighborhood', `%${neighborhood}%`)
-    if (propertyType) query = query.eq('property_type', propertyType)
+    if (propertyType) query = query.ilike('title', `%${propertyType === 'ph' ? 'PH' : propertyType === 'apartment' ? 'departamento' : propertyType === 'house' ? 'casa' : propertyType}%`)
     if (minM2) query = query.gte('m2_total', Number(minM2))
     if (maxM2) query = query.lte('m2_total', Number(maxM2))
     if (minRooms) query = query.gte('rooms', Number(minRooms))
