@@ -20,7 +20,7 @@ export default function RegisterPage() {
     setLoading(true)
     setError('')
 
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email,
       password,
       options: { emailRedirectTo: `${window.location.origin}/onboarding` },
@@ -28,6 +28,9 @@ export default function RegisterPage() {
 
     if (error) {
       setError(error.message)
+    } else if (data.session) {
+      // Email confirmation disabled — logged in immediately
+      router.push('/onboarding')
     } else {
       setSuccess(true)
     }
